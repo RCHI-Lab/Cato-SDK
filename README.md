@@ -1,8 +1,7 @@
 # Cato-SDK
 
-Python SDK for realtime 3D IMU data from the [Auli.tech Cato](https://auli.tech/) —
-a glasses-mounted wearable for people with motor disabilities. The Cato's
-standard HID mouse output is only 2D; this SDK exposes the full 3-axis
+Python SDK for realtime 3D IMU data from the [Auli.tech Cato](https://auli.tech/).
+The Cato's standard HID mouse output is only 2D; this SDK exposes the full 3-axis
 accelerometer + gyroscope stream, fused orientation (quaternion / euler), and
 linear acceleration for robotics and research applications.
 
