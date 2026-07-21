@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Cato IMU Visualizer</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; overflow: hidden; background: #12121f;
+      font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #ccc;
+    }
+    #hud {
+      position: fixed; top: 16px; left: 16px; z-index: 10;
+      background: rgba(20, 20, 40, 0.85); border: 1px solid #2a2a44;
+      border-radius: 10px; padding: 14px 16px; min-width: 240px;
+      backdrop-filter: blur(6px); font-size: 13px; line-height: 1.7;
+    }
+    #hud h1 { margin: 0 0 6px; font-size: 15px; color: #fff; font-weight: 600; }
+    .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+           background: #e53935; margin-right: 6px; }
+    .dot.ok { background: #43a047; }
+    .row { display: flex; justify-content: space-between; gap: 12px; }
+    .val { font-variant-numeric: tabular-nums; color: #9fc5ff; }
+    button {
+      margin-top: 10px; margin-right: 8px; padding: 6px 14px; border-radius: 7px;
+      border: 1px solid #33518a; background: #1565c0; color: #fff;
+      font-size: 13px; cursor: pointer;
+    }
+    button:hover { background: #1976d2; }
+    button.secondary { background: transparent; color: #9fc5ff; }
+    #help {
+      position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+      font-size: 12px; color: #667; z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <h1><span id="dot" class="dot"></span>Cato IMU</h1>
+    <div class="row"><span>stream</span><span class="val" id="rate">–</span></div>
+    <div class="row"><span>roll</span><span class="val" id="roll">–</span></div>
+    <div class="row"><span>pitch</span><span class="val" id="pitch">–</span></div>
+    <div class="row"><span>yaw</span><span class="val" id="yaw">–</span></div>
+    <div class="row"><span>|lin acc|</span><span class="val" id="lin">–</span></div>
+    <div>
+      <button id="reset">Reset orientation</button>
+      <button id="vectors" class="secondary">Vectors: on</button>
+    </div>
+  </div>
+  <div id="help">run <code>python examples/visualizer/serve.py</code> · move the Cato to rotate the model · orange arrow = linear acceleration</div>
+
+  <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.170.0/build/three.module.js" } }
+  </script>
+  <script type="module">
+    import * as THREE from "three";
+
+    // ---------------------------------------------------------------- scene
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a2e);
+
+    const camera = new THREE.PerspectiveCamera(
+      65, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 0, 28);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    const grid = new THREE.GridHelper(28, 14, 0x444466, 0x2a2a44);
+    grid.position.y = -8;
+    scene.add(grid);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    dirLight.position.set(5, 10, 7);
+    scene.add(dirLight);
+
+    // Same diffuse blue->yellow shader as the official demo
+    const shaderMat = new THREE.ShaderMaterial({
+      uniforms: {
+        lightDir:       { value: new THREE.Vector3(0.5, 1.0, 0.8).normalize() },
+        baseColor:      { value: new THREE.Color(0x1565c0) },
+        highlightColor: { value: new THREE.Color(0xffd54f) },
+      },
+      vertexShader: `
+        varying vec3 vNormal;
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 lightDir; uniform vec3 baseColor; uniform vec3 highlightColor;
+        varying vec3 vNormal;
+        void main() {
+          float diff = max(dot(vNormal, lightDir), 0.0);
+          gl_FragColor = vec4(mix(baseColor, highlightColor, diff), 1.0);
+        }`,
+    });
+    const greyMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.5 });
+
+    // Stylized Cato: pod body + clip arm + front face plate, plus body axes
+    const model = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(4.5, 3, 9), shaderMat);
+    model.add(body);
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(3.4, 2.2, 0.6), greyMat);
+    plate.position.z = 4.6;
+    model.add(plate);
+    const clip = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.0, 7), greyMat);
+    clip.position.set(0, -2.0, -0.5);
+    model.add(clip);
+    const axes = new THREE.AxesHelper(7);
+    model.add(axes);
+    scene.add(model);
+
+    // Thick arrow (cylinder + cone), ported from the demo's makeArrow
+    function makeArrow(color) {
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.3 });
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1, 8), mat);
+      const head  = new THREE.Mesh(new THREE.ConeGeometry(0.28, 1, 8), mat);
+      const group = new THREE.Group();
+      group.add(shaft); group.add(head);
+      group.setDirection = (dir) => {
+        const d = dir.clone().normalize();
+        if (d.y > 0.9999)       group.quaternion.set(0, 0, 0, 1);
+        else if (d.y < -0.9999) group.quaternion.set(1, 0, 0, 0);
+        else {
+          const axis = new THREE.Vector3(0, 1, 0).cross(d).normalize();
+          group.quaternion.setFromAxisAngle(axis, Math.acos(d.y));
+        }
+      };
+      group.setLength = (length, headLen = 0.8, headWidth = 0.4) => {
+        const shaftLen = Math.max(length - headLen, 0.01);
+        shaft.scale.y = shaftLen;
+        shaft.position.y = shaftLen / 2;
+        head.scale.set(headWidth / 0.28, headLen, headWidth / 0.28);
+        head.position.y = shaftLen + headLen / 2;
+      };
+      return group;
+    }
+    const accArrow = makeArrow(0xe64a19);
+    accArrow.visible = false;
+    scene.add(accArrow);
+
+    // ------------------------------------------------------------------ hud
+    const $ = (id) => document.getElementById(id);
+    let showVectors = true;
+    $("vectors").onclick = () => {
+      showVectors = !showVectors;
+      $("vectors").textContent = `Vectors: ${showVectors ? "on" : "off"}`;
+      if (!showVectors) accArrow.visible = false;
+    };
+
+    // ------------------------------------------------------------ websocket
+    let ws = null;
+    let latest = null;
+    const rateWindow = [];
+
+    $("reset").onclick = () => ws?.readyState === 1 && ws.send("reset");
+
+    function connect() {
+      ws = new WebSocket("ws://localhost:8765");
+      ws.onopen = () => $("dot").classList.add("ok");
+      ws.onclose = () => {
+        $("dot").classList.remove("ok");
+        $("rate").textContent = "–";
+        setTimeout(connect, 1000);
+      };
+      ws.onmessage = (e) => {
+        latest = JSON.parse(e.data);
+        rateWindow.push({ t: performance.now(), n: latest.n });
+        while (rateWindow.length > 60) rateWindow.shift();
+      };
+    }
+    connect();
+
+    // --------------------------------------------------------------- render
+    function animate() {
+      requestAnimationFrame(animate);
+      if (latest) {
+        const [w, x, y, z] = latest.q;
+        model.quaternion.set(x, y, z, w);
+
+        const lin = new THREE.Vector3(...latest.lin);
+        const mag = lin.length();
+        if (showVectors && mag > 0.15) {
+          accArrow.visible = true;
+          accArrow.setDirection(lin.clone().normalize());
+          accArrow.setLength(Math.min(mag * 2.4, 12), 0.8, 0.4);
+        } else {
+          accArrow.visible = false;
+        }
+
+        // euler readout (three.js YXZ, matching ImuSample.euler())
+        const e = new THREE.Euler().setFromQuaternion(model.quaternion, "YXZ");
+        $("roll").textContent  = `${THREE.MathUtils.radToDeg(e.z).toFixed(1)}°`;
+        $("pitch").textContent = `${THREE.MathUtils.radToDeg(e.x).toFixed(1)}°`;
+        $("yaw").textContent   = `${THREE.MathUtils.radToDeg(e.y).toFixed(1)}°`;
+        $("lin").textContent   = `${mag.toFixed(2)} m/s²`;
+
+        if (rateWindow.length > 1) {
+          const first = rateWindow[0], last = rateWindow[rateWindow.length - 1];
+          const dt = (last.t - first.t) / 1000;
+          const hz = dt > 0 ? (last.n - first.n) / dt : 0;
+          $("rate").textContent = `${hz.toFixed(0)} Hz`;
+        }
+      }
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
